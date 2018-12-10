@@ -61,12 +61,12 @@ type TreeNode struct {
 	selected func()
 
 	// Temporary member variables.
-	parent        *TreeNode // The parent node (nil for the root).
-	level         int       // The hierarchy level (0 for the root, 1 for its children, and so on).
-	graphicsX     int       // The x-coordinate of the left-most graphics rune.
-	textX         int       // The x-coordinate of the first rune of the text.
-	subtextX      int       // THe x-coordinates of the first rune of the subtext
-	subtextHeight int       // The x-coordinate of the first rune of the subtext.
+	parent    *TreeNode // The parent node (nil for the root).
+	level     int       // The hierarchy level (0 for the root, 1 for its children, and so on).
+	graphicsX int       // The x-coordinate of the left-most graphics rune.
+	textX     int       // The x-coordinate of the first rune of the text.
+	subtextX  int       // THe x-coordinates of the first rune of the subtext
+	posY      int       // A debugging reference for Draw
 }
 
 // NewTreeNode returns a new tree node.
@@ -482,7 +482,7 @@ func (t *TreeView) process() {
 		// If text must align, we correct the positions.
 		if t.align && node.level > t.topLevel {
 			node.textX = maxTextX
-			node.subtextX = maxTextX + node.subIndent
+			node.subtextX = maxTextX+node.subIndent
 		}
 
 		// If we skipped levels, shift to the left.
@@ -502,6 +502,10 @@ func (t *TreeView) process() {
 		case treeUp:
 			for newSelectedIndex > 0 {
 				newSelectedIndex--
+				// Offset the view accordingly to height of the subtext block.
+				if t.nodes[newSelectedIndex].IsSubtextShowing() {
+					t.offsetY -= t.nodes[newSelectedIndex].height
+				}
 				if t.nodes[newSelectedIndex].selectable {
 					break MovementSwitch
 				}
@@ -510,6 +514,10 @@ func (t *TreeView) process() {
 		case treeDown:
 			for newSelectedIndex < len(t.nodes)-1 {
 				newSelectedIndex++
+				// Offset the view accordingly to height of the subtext block.
+				if t.nodes[newSelectedIndex].IsSubtextShowing() {
+					t.offsetY += t.nodes[newSelectedIndex].height
+				}
 				if t.nodes[newSelectedIndex].selectable {
 					break MovementSwitch
 				}
@@ -517,37 +525,51 @@ func (t *TreeView) process() {
 			newSelectedIndex = selectedIndex
 		case treeHome:
 			for newSelectedIndex = 0; newSelectedIndex < len(t.nodes); newSelectedIndex++ {
+				// Offset the view accordingly to height of the subtext block.
+				if t.nodes[newSelectedIndex].IsSubtextShowing() {
+					t.offsetY -= t.nodes[newSelectedIndex].height
+				}
 				if t.nodes[newSelectedIndex].selectable {
 					break MovementSwitch
 				}
 			}
 			newSelectedIndex = selectedIndex
 		case treeEnd:
-			for newSelectedIndex = len(t.nodes) - 1; newSelectedIndex >= 0; newSelectedIndex-- {
+			for newSelectedIndex = len(t.nodes)-1; newSelectedIndex >= 0; newSelectedIndex-- {
+				// Offset the view accordingly to height of the subtext block.
+				if t.nodes[newSelectedIndex].IsSubtextShowing() {
+					t.offsetY += t.nodes[newSelectedIndex].height
+				}
 				if t.nodes[newSelectedIndex].selectable {
 					break MovementSwitch
 				}
 			}
 			newSelectedIndex = selectedIndex
 		case treePageUp:
-			if newSelectedIndex+height < len(t.nodes) {
-				newSelectedIndex += height
-			} else {
-				newSelectedIndex = len(t.nodes) - 1
+			blockOffsetY := t.nodes[newSelectedIndex].height
+			for newSelectedIndex+blockOffsetY < height {
+				newSelectedIndex++
+				blockOffsetY = t.nodes[newSelectedIndex].height
 			}
 			for ; newSelectedIndex < len(t.nodes); newSelectedIndex++ {
+				if t.nodes[newSelectedIndex].showSubtext {
+					t.offsetY -= t.nodes[newSelectedIndex].height
+				}
 				if t.nodes[newSelectedIndex].selectable {
 					break MovementSwitch
 				}
 			}
 			newSelectedIndex = selectedIndex
 		case treePageDown:
-			if newSelectedIndex >= height {
-				newSelectedIndex -= height
-			} else {
-				newSelectedIndex = 0
+			blockOffsetY := t.nodes[newSelectedIndex].height
+			for newSelectedIndex+blockOffsetY >= height {
+				newSelectedIndex--
+				blockOffsetY = t.nodes[newSelectedIndex].height
 			}
 			for ; newSelectedIndex >= 0; newSelectedIndex-- {
+				if t.nodes[newSelectedIndex].showSubtext {
+					t.offsetY += t.nodes[newSelectedIndex].height
+				}
 				if t.nodes[newSelectedIndex].selectable {
 					break MovementSwitch
 				}
@@ -620,9 +642,18 @@ func (t *TreeView) Draw(screen tcell.Screen) {
 	}
 	t.movement = treeNone
 
+	// Determine the height of all the visible nodes.
+	var nodesheight int
+	for _, n := range t.nodes {
+		if n.showSubtext {
+			nodesheight += n.height + 1
+		} else {
+			nodesheight += 2
+		}
+	}
 	// Fix invalid offsets.
-	if t.offsetY >= len(t.nodes)-height {
-		t.offsetY = len(t.nodes) - height
+	if t.offsetY >= height - nodesheight {
+		t.offsetY = height - nodesheight
 	}
 	if t.offsetY < 0 {
 		t.offsetY = 0
@@ -684,7 +715,6 @@ func (t *TreeView) Draw(screen tcell.Screen) {
 			if len(t.prefixes) > 0 {
 				_, prefixWidth = Print(screen, t.prefixes[(node.level-t.topLevel)%len(t.prefixes)], x+node.textX, posY, width-node.textX, AlignLeft, node.textColor)
 			}
-
 			// Text.
 			if node.textX+prefixWidth < width {
 				style := tcell.StyleDefault.Foreground(node.textColor)
@@ -693,7 +723,6 @@ func (t *TreeView) Draw(screen tcell.Screen) {
 				}
 				printWithStyle(screen, node.text, x+node.textX+prefixWidth, posY, width-node.textX-prefixWidth, AlignLeft, style)
 			}
-
 			// Subtext
 			if node.showSubtext {
 				if len(node.subtext) > 0 {
@@ -706,14 +735,13 @@ func (t *TreeView) Draw(screen tcell.Screen) {
 					posY++
 					printWithStyle(screen, line, x+node.subtextX+prefixWidth, posY, width-node.subtextX-prefixWidth, AlignLeft, style)
 				}
+				posY += 2
 			}
 		}
-
-		// Advance.
-		posY += 2
 	}
+	// Advance.
+	posY += 2
 }
-
 // InputHandler returns the handler for this primitive.
 func (t *TreeView) InputHandler() func(event *tcell.EventKey, setFocus func(p Primitive)) {
 	return t.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p Primitive)) {
